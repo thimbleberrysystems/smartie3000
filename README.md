@@ -1,137 +1,133 @@
-# artie-mcp
-
-An [MCP](https://modelcontextprotocol.io) server that lets an LLM drive an **Artie 3000** drawing robot — from raw motion up to SVG paths and handwriting.
+# artie-mcp — giving a language model a hand that can hold a pen
 
 ![Heart and text drawn by Artie](docs/heart.png)
 
-*Above: exactly what the robot draws. Not a mock-up — this is the actual command stream (138 moves) replayed through a simulated turtle.*
+Language models are very good at deciding what to draw and extremely bad at knowing whether they actually drew it. This project closes the first half of that gap: it gives an LLM a **body** — a £60 wheeled robot with a felt pen — and a set of tools that run from *"turn left 90 degrees"* all the way up to *"draw this SVG path"* and *"write this word."*
+
+Then it spends most of its effort on the part that turns out to be hard: **the physical world does not do what you told it to.**
 
 ---
 
-## What this is
+## Physical AI, in miniature
 
-Artie 3000 is a £60 kids' toy: a wheeled robot that holds a felt pen. It ships with a Blockly editor for children. This turns it into something an LLM can drive, with tools that go from `forward 100mm` all the way up to *"draw this SVG path"* and *"write this word"*.
+An Artie 3000 is a toy. But it is a startlingly complete model of the problems that show up whenever a model acts on the world instead of on text:
 
-```
-"draw a heart, and write ARTIE above it"
-        |
-        v
-  artie_draw_svg(...)      -- LLM emits an SVG path
-  artie_draw_text("ARTIE") -- single-stroke font
-        |
-        v
-   pen on paper
-```
+**The body has no senses.** We probed every sensor and introspection command in the protocol — `collideState`, `followState`, `getSettings`, encoders, battery voltage. Artie **rejects all of them**. It cannot perceive its position, its heading, whether it hit something, or whether its battery is dying. Everything it does is *open loop*: you command, and you hope.
 
-## How it talks to the robot
+**So the model must maintain a belief about reality.** The server dead-reckons the robot's pose from the commands it issued, because the robot cannot tell us. That belief is the only reason "draw a square, then write a caption under it" works at all. It is also, inevitably, **wrong** — wheels slip, and nothing ever corrects it.
 
-Artie speaks the **[Mirobot protocol](https://learn.mime.co.uk/docs/understanding-the-mirobot-protocol/)** — a JSON WebSocket protocol from an unrelated open-source robot. That was the key discovery: the toy isn't a black box, it implements a documented spec.
+**Actions are slow and irreversible.** Every command blocks until the wheels physically stop (~40mm/s). Ink on paper cannot be undone. A bug doesn't throw an exception; it draws a crooked line and you find out afterwards.
 
-```
-ws://<artie>:8899/websocket
--->  {"cmd": "forward", "arg": 100, "id": "abc123"}
-<--  {"status": "accepted", "id": "abc123"}      # motion started
-<--  {"status": "complete", "id": "abc123"}      # wheels have STOPPED
-```
+**The interface lies unless you make it honest.** Half the work here was discovering that the abstractions were *quietly* wrong — a planner that assumed the robot always faced "up," coordinates that claimed to be absolute but weren't, rounding that accumulated into a visible tilt. None of it errored. It just came out wrong on the paper.
 
-**Confirmed on real hardware** (firmware `3.1.21`). Two properties of the robot shape the entire design:
-
-- **It's asynchronous.** A move reports `complete` only when the wheels physically stop — a 100mm move takes ~2.5 seconds. The client waits for it.
-- **It's single-tasking.** Send a second move before the first finishes and it returns `error: "Previous command not finished"`. Commands are serialised behind a lock.
-
-## Quick start
-
-```bash
-uv venv && uv pip install -e ".[dev]"
-
-# 1. Find the robot and check it speaks the protocol (stdlib only, no install needed)
-python3 scripts/probe.py
-
-# 2. Point the server at it
-export ARTIE_HOST=192.168.1.123
-
-# 3. Register with Claude Code
-claude mcp add artie -- uv run --directory $(pwd) python -m artie_mcp
-```
-
-Then just ask: *"draw a hexagon"*, *"write HELLO"*, *"draw this SVG path"*.
-
-### No robot? No problem.
-
-```bash
-ARTIE_DRY_RUN=1 uv run mcp dev src/artie_mcp/server.py
-```
-
-Dry-run mode exercises the whole stack — tool schemas, planner, SVG pipeline — with no hardware and no batteries.
+That is the whole discipline of physical AI, at desk scale: *your model of the world is not the world, and the world will not tell you when you've drifted.*
 
 ---
 
-## ⚠️ Calibrate before you trust a single drawing
-
-**The units are inferred, not documented.** Millimetres and degrees come from the *Mirobot* spec, not from Artie's own docs. If they're wrong, **nothing errors** — your drawings just come out silently the wrong size, and every drawing tool multiplies the error.
+## What the model can actually do
 
 ```
-artie_calibrate()            # draws a line that SHOULD be 100mm
-                             # and a corner that SHOULD be 90 degrees
-# measure them with a ruler, then:
-artie_calibrate(measured_line_mm=94, measured_turn_deg=87)
-# -> ARTIE_DISTANCE_SCALE=1.0638
-#    ARTIE_TURN_SCALE=1.0345
+        "draw a heart, and write ARTIE above it"
+                        |
+                        v
+   artie_draw_svg(...)        <- the model emits an SVG path
+   artie_draw_text("ARTIE")   <- rendered in a single-stroke font
+                        |
+                        v
+                  ink on paper
 ```
-
-Set those in the environment, restart, and draw a square. **If the square doesn't close, the turn scale is still off** — that's the classic symptom.
-
----
-
-## Getting Artie onto your home WiFi
-
-Out of the box Artie broadcasts its own hotspot (`Artie-XXXX`, robot at `192.168.4.1`), which means your computer has to leave your network — and lose internet — to talk to it.
-
-You can avoid that. Artie's firmware has a **WiFi config page that nothing links to**:
-
-```
-http://192.168.4.1/admin/wifi.html
-```
-
-Join the hotspot **from a phone**, open that URL, pick your home network, and save. Artie joins your LAN *and keeps its own hotspot running*. Your computer never leaves your network. Set `ARTIE_HOST` to its new address and you're done — no network switching, ever again.
-
-> Verified working: Artie joined a home LAN and has been driven over it since. The page appears to be served only on the hotspot side, so configure it there.
-
-## Tools
 
 | | |
 |---|---|
-| **Position** | `artie_set_origin` · `artie_where` · `artie_status` |
-| **Primitives** | `artie_forward` `artie_back` (mm) · `artie_left` `artie_right` (deg) · `artie_pen_up` `artie_pen_down` · `artie_beep` · `artie_stop` · `artie_pause` `artie_resume` |
+| **Sense of place** | `artie_set_origin` · `artie_where` · `artie_status` |
+| **Motion** | `artie_forward` `artie_back` (mm) · `artie_left` `artie_right` (deg) · `artie_pen_up` `artie_pen_down` · `artie_beep` · `artie_stop` · `artie_pause` `artie_resume` |
 | **Batch** | `artie_run_sequence(["pendown", "forward 100", "left 90", ...])` — one call, not nine round-trips |
 | **Drawing** | `artie_draw_polygon` · `artie_draw_path` · `artie_draw_svg` · `artie_draw_text` |
 | **Setup** | `artie_calibrate` · `artie_battery` |
 
 ![Shapes, text, and an SVG curve placed on one page](docs/gallery.png)
 
-*A square, a caption, a triangle and an SVG curve — each placed at absolute page coordinates.*
+*A square, a caption, a triangle and an SVG curve — each placed at absolute page coordinates. This is the real command stream, replayed.*
 
-### Preview: let the model see its own work
+### Letting the model see before it commits
 
-Every drawing tool takes `preview_only=true`, which returns **an actual image** of what it's about to draw, plus the size and command count — and the robot doesn't move. The model can look at its drawing and fix it *before* committing ink to paper.
+Every drawing tool takes `preview_only=true`, which returns **an actual image** of what is about to be drawn — and the robot doesn't move. The model can look at its own plan and fix it *before* the pen touches paper.
+
+This matters more for a body than for a chatbot. A wrong sentence can be retracted. A wrong line cannot.
 
 ---
 
-## The robot has no idea where it is
+## The robot is blind. Plan accordingly.
 
-Artie has **no encoders**. It cannot sense its position or heading. The server **dead-reckons** from the commands it sent, which is the only reason absolute page coordinates mean anything at all.
+Artie has **no encoders and no sensors of any kind.** The server dead-reckons its position from what it commanded. This is what makes absolute page coordinates meaningful — and it is what makes them fragile.
 
-This matters more than it sounds. Without pose tracking, every drawing assumed the robot faced "up the page" — but a square leaves it facing the *opposite* way, so anything drawn afterwards came out **rotated 180°**, silently. Tracking pose is what makes a shape and its caption line up.
+If a drawing lands somewhere unexpected, the belief has drifted from reality. Physically reposition the robot and call `artie_set_origin` to re-sync. That is the only correction mechanism, because the robot cannot sense that anything is wrong.
 
-But dead reckoning **drifts**: wheels slip, and nothing ever corrects it. If a drawing lands somewhere unexpected, physically reposition the robot and call `artie_set_origin` to re-sync.
+**Closing this loop properly needs a camera** — and the paper itself is the ruler (A4 is exactly 210×297mm, so a photo can be rectified against the sheet's own corners and measured in real millimetres). That is the natural next step, and it would make calibration and drift-correction fully autonomous.
 
-## Gotchas worth knowing
+---
 
-**No battery telemetry.** `getVoltage` exists in the Artie *Max* library but not on Artie 3000's firmware. A flat battery makes the motors weak, so lines come out short and squares don't close — symptoms that look **exactly** like a calibration fault and get misdiagnosed as one. Fresh AAs are a blind first move.
+## ⚠️ Calibrate before you trust a single drawing
 
-**The robot takes integers, the planner emits floats.** A flattened curve is full of moves like `forward 3.7`. Rounding each one independently discards up to half a unit *every command*, and it accumulates: after ~140 commands the heading had drifted several degrees and text came out visibly slanted. The client carries the rounding remainder into the next command (error diffusion), so cumulative error stays bounded.
+**The units are inferred, not documented.** Millimetres and degrees come from the *Mirobot* spec, not from Artie's own. If they're wrong, **nothing errors** — drawings just come out silently the wrong size, and every tool multiplies the error.
 
-**Drawing is slow.** ~40mm/s, and every command blocks until the wheels stop. A detailed SVG is minutes, not seconds. Curves are simplified aggressively for this reason — an unsimplified heart was 646 commands; it's now 54, with the same shape.
+```
+artie_calibrate()            # draws a line that SHOULD be 100mm
+                             # and a corner that SHOULD be 90 degrees
+# measure them, then:
+artie_calibrate(measured_line_mm=94, measured_turn_deg=87)
+# -> ARTIE_DISTANCE_SCALE=1.0638
+#    ARTIE_TURN_SCALE=1.0345
+```
+
+**A shape that doesn't close is the tell.** Draw a square (or better, a pentagon — five turns compound the error further). If the last corner doesn't meet the first, the *turn* scale is off.
+
+---
+
+## How it talks to the robot
+
+Artie turned out to speak the **[Mirobot protocol](https://learn.mime.co.uk/docs/understanding-the-mirobot-protocol/)** — a documented JSON-over-WebSocket protocol from an unrelated open-source robot. The toy is not a black box.
+
+```
+ws://<artie>:8899/websocket
+-->  {"cmd": "forward", "arg": 100, "id": "abc123"}
+<--  {"status": "accepted", "id": "abc123"}      # motion started
+<--  {"status": "complete", "id": "abc123"}      # the wheels have STOPPED
+```
+
+**Confirmed on real hardware** (firmware `3.1.21`). Two properties shape everything:
+
+- **Asynchronous.** `complete` arrives only when the wheels physically stop. A 100mm move takes ~2.5 seconds; the client waits for it.
+- **Single-tasking.** A second move sent before the first finishes is rejected outright. Motion is serialised behind a lock.
+
+## Quick start
+
+```bash
+uv venv && uv pip install -e ".[dev]"
+
+python3 scripts/probe.py          # find the robot, verify the protocol (stdlib only)
+export ARTIE_HOST=192.168.1.123
+
+claude mcp add artie -- uv run --directory $(pwd) python -m artie_mcp
+```
+
+Then just ask: *"draw a hexagon"*, *"write HELLO"*, *"draw this SVG path"*.
+
+**No robot?** `ARTIE_DRY_RUN=1 uv run mcp dev src/artie_mcp/server.py` exercises the entire stack — tools, planner, SVG pipeline — with no hardware and no batteries.
+
+### Get Artie onto your home WiFi (do this first)
+
+Out of the box, Artie broadcasts its own hotspot (`Artie-XXXX`), which means your computer has to *leave* your network — and lose internet — to talk to it. You don't have to live like that.
+
+1. Join the `Artie-XXXX` hotspot **from your phone**.
+2. Open **`http://192.168.4.1`** — Artie's own interface. The WiFi setting is in there.
+3. Point it at your home network and save.
+
+Artie joins your LAN and keeps its own hotspot running as a fallback. Find its new address (`scripts/probe.py`, or your router's DHCP table), set `ARTIE_HOST`, and you never switch networks again.
+
+> **Note:** Artie's firmware is *derived* from Mirobot's, but it is not identical. Mirobot's admin pages (`/admin/wifi.html`) are **not present** on Artie — use `http://192.168.4.1` itself. Likewise, all of Mirobot's sensor and introspection commands are rejected. Assume the protocol's *motion* subset, and nothing more.
+
+---
 
 ## Design
 
@@ -144,16 +140,32 @@ polygon   │   (polylines, mm)   (x, y, heading,     (forward/
 path      ┘                      pen state)          left/...)
 ```
 
-Add a new input format (DXF, G-code) and nothing downstream changes.
-
 | file | |
 |---|---|
 | `client.py` | WebSocket transport: serialised motion, reconnect, abort, rounding carry |
-| `strokes.py` | `StrokePlan`, pose, turtle planner, simplification, bounds |
-| `svg.py` | SVG `d` → polylines (M/L/H/V/C/S/Q/T/A/Z, curves flattened) |
-| `text.py` | single-stroke font (a pen can't fill an outline) |
+| `strokes.py` | `StrokePlan`, pose, turtle planner, simplification, page bounds |
+| `svg.py` | SVG `d` → polylines (M/L/H/V/C/S/Q/T/A/Z; curves flattened) |
+| `text.py` | single-stroke font — a pen cannot fill an outline |
 | `server.py` | MCP tools |
 | `scripts/probe.py` | standalone diagnostic, stdlib only |
+
+## Three bugs the physical world taught us
+
+None of these threw an exception. All of them just came out **wrong on the paper**.
+
+**The second drawing was rotated 180°.** The planner assumed the robot started every drawing facing "up the page." But a square leaves it facing the *opposite* way — so a heart followed by a caption produced an upside-down caption. Silent. Fixed by tracking pose across drawings.
+
+**"Absolute" coordinates were ignored.** A triangle at `(0,0)` and the same triangle at `(500,500)` emitted *byte-identical* commands. The docstring promised page positioning; the code delivered "wherever the robot happens to be."
+
+**Rounding accumulated into a visible tilt.** The robot takes integers; the planner emits floats (`forward 3.7`). Rounding each command independently discards up to half a unit *every time*, and over ~140 commands the heading drifted several degrees — text came out slanted. The client now carries the remainder into the next command (error diffusion), so cumulative error stays bounded.
+
+The third one was caught only by **rendering the output and looking at it**. The test suite passed 68/68 with the bug present.
+
+## Other things worth knowing
+
+**No battery telemetry.** A flat battery makes the motors weak, so lines come out short and shapes don't close — symptoms indistinguishable from a calibration fault, and routinely misdiagnosed as one. Fresh AAs are a blind first move.
+
+**Distance costs time; complexity is nearly free.** A 33-segment circle and a 4-segment square both took 18 seconds, because both drew ~350mm of line. Curves are simplified hard for this reason: an unsimplified heart compiled to 646 blocking commands; it's now 54, with the same shape.
 
 ## Configuration
 
@@ -163,7 +175,7 @@ Add a new input format (DXF, G-code) and nothing downstream changes.
 | `ARTIE_PORT` | `8899` | |
 | `ARTIE_DRY_RUN` | off | simulate; no robot needed |
 | `ARTIE_TIMEOUT` | `30` | seconds to wait for a move to complete |
-| `ARTIE_DISTANCE_SCALE` | `1.0` | **calibration** — see above |
+| `ARTIE_DISTANCE_SCALE` | `1.0` | **calibration** |
 | `ARTIE_TURN_SCALE` | `1.0` | **calibration** |
 | `ARTIE_PAGE_WIDTH_MM` / `ARTIE_PAGE_HEIGHT_MM` | `210` / `297` | oversized drawings are rejected before the pen moves |
 
@@ -173,13 +185,13 @@ Add a new input format (DXF, G-code) and nothing downstream changes.
 uv run pytest        # 71 tests
 ```
 
-Two carry the most weight:
+Two carry the weight:
 
-- **`tests/fake_artie.py`** — an in-process robot speaking the real protocol, which can be told to stall, drop the connection, or reject commands on cue. The transport was once the only untested module, and it was where every serious bug lived.
-- **`replay()`** — takes the commands actually issued, drives a simulated turtle with them, and checks the pen visits the planned points. It catches sign errors and heading drift that eyeballing a command list never would.
+- **`tests/fake_artie.py`** — an in-process robot speaking the real protocol, which can be told to stall, drop the connection, or reject commands on cue. The transport was once the only untested module, and that is exactly where every serious bug was hiding.
+- **`replay()`** — takes the commands *actually issued*, drives a simulated turtle with them, and checks the pen visits the planned points. It catches sign errors and heading drift that reading a command list never would.
 
 ## Credits
 
-Protocol reverse-engineering rests on [Mirobot](https://github.com/mirobot) (Mime Industries), and on two projects that proved an Artie 3000 speaks it: [`Artie3000_WiiRemote`](https://github.com/majki09/Artie3000_WiiRemote) and [`rogerhoward/artie3000`](https://github.com/rogerhoward/artie3000). The stroke-font idea comes from [`writing-with-artie`](https://github.com/tomhannen/writing-with-artie).
+The protocol work rests on [Mirobot](https://github.com/mirobot) (Mime Industries), and on two projects that proved an Artie 3000 speaks it: [`Artie3000_WiiRemote`](https://github.com/majki09/Artie3000_WiiRemote) and [`rogerhoward/artie3000`](https://github.com/rogerhoward/artie3000). The stroke-font idea comes from [`writing-with-artie`](https://github.com/tomhannen/writing-with-artie).
 
 Artie 3000 is a product of Educational Insights. This project is unaffiliated.

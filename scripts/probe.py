@@ -2,11 +2,10 @@
 """Phase 0 diagnostic for the Artie 3000.
 
 Stdlib only, on purpose: run this before installing anything, and before
-trusting any other code in this repo. It answers three questions in order:
+trusting any other code in this repo. It answers two questions:
 
   1. Can this machine even reach the robot?  (the WSL2 NAT question)
   2. Does it speak the Mirobot WebSocket protocol we designed against?
-  3. Is the admin UI -- and therefore the WiFi-join path -- present?
 
 Usage:
     python3 scripts/probe.py                  # default 192.168.4.1 (Artie's own AP)
@@ -108,11 +107,11 @@ def ws_recv_text(sock: socket.socket) -> str:
     return payload.decode(errors="replace")
 
 
-# --- the three checks ---
+# --- the checks ---
 
 
 def check_websocket(host: str) -> bool:
-    print(f"[1/3] WebSocket  ws://{host}:{PORT}/websocket")
+    print(f"[1/2] WebSocket  ws://{host}:{PORT}/websocket")
     try:
         sock = ws_connect(host, PORT)
     except OSError as exc:
@@ -157,31 +156,24 @@ def _http_get(url: str) -> tuple[int, str]:
         return resp.status, resp.read(2048).decode(errors="replace")
 
 
-def check_admin_ui(host: str) -> None:
-    """The WiFi-join path. Unconfirmed on Artie -- this is the experiment."""
-    print(f"[2/3] Admin UI   http://{host}/admin/wifi.html")
+def check_web_ui(host: str) -> None:
+    """Artie's own web interface -- where the WiFi setting actually lives.
+
+    Note: Mirobot's admin pages (/admin/wifi.html) are NOT present on Artie,
+    despite the shared protocol lineage. Confirmed 404 on real hardware. The
+    WiFi config is in Artie's own UI at the root.
+    """
+    print(f"[2/2] Web UI     http://{host}/")
     try:
-        status, body = _http_get(f"http://{host}/admin/wifi.html")
+        status, _ = _http_get(f"http://{host}/")
         if status == 200:
-            print("      FOUND. Open that URL in a browser to put Artie on your LAN.")
-            print("      (It should keep its own hotspot running as well.)")
+            print("      OK    Artie's interface is up.")
+            print("      To put Artie on your home WiFi: join its hotspot from a")
+            print("      phone, open this URL, and set the network there.")
             return
         print(f"      HTTP {status} -- unexpected.")
     except urllib.error.HTTPError as exc:
-        print(f"      HTTP {exc.code} -- page not present.")
-    except OSError as exc:
-        print(f"      unreachable: {exc}")
-
-    print(f"[3/3] Fallback   http://{host}/admin/wifiscan.cgi")
-    print("      (page may be stripped while the endpoint survives)")
-    try:
-        status, body = _http_get(f"http://{host}/admin/wifiscan.cgi")
-        print(f"      HTTP {status}: {body[:200]!r}")
-        print("      Endpoint responds -- /admin/settings.cgi should save SSID+password.")
-    except urllib.error.HTTPError as exc:
-        print(f"      HTTP {exc.code} -- gone too.")
-        print("      => No WiFi-join path. Stay on Artie's hotspot (AP mode).")
-        print("         This costs convenience only; the MCP server works either way.")
+        print(f"      HTTP {exc.code}")
     except OSError as exc:
         print(f"      unreachable: {exc}")
 
@@ -192,7 +184,7 @@ def main() -> int:
 
     reachable = check_websocket(host)
     print()
-    check_admin_ui(host)
+    check_web_ui(host)
     print()
 
     if reachable:

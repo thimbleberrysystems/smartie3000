@@ -1,0 +1,31 @@
+[project]
+name = "artie-mcp"
+version = "0.1.0"
+description = "MCP server for the Artie 3000 drawing robot"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned below 2.0 deliberately: the MCP SDK's v2 line is a pre-release
+    # whose own README says not to use it in production. We use the stable
+    # 1.x API (`from mcp.server.fastmcp import FastMCP`).
+    "mcp>=1.2,<2",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "cairosvg>=2.7"]
+
+[project.scripts]
+artie-mcp = "artie_mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/artie_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

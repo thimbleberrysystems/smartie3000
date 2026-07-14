@@ -12,6 +12,24 @@ The MCP server at the end is the easy part. Everything underneath it is the work
 
 ---
 
+## A short history of a forgotten robot
+
+Artie 3000 was unveiled by [Educational Insights at CES in January 2019](https://www.prnewswire.com/news-releases/educational-insights-unveils-new-coding-robot-artie-3000-and-a-partnership-with-american-mensa-at-ces-2019-300774589.html) and shipped that spring at $69.99, aimed at 7–12 year olds. The pitch was neat: kids code, Artie draws. Four real languages — Blockly, Snap!, JavaScript and Python — served from a web server inside the robot itself, no internet required.
+
+It got a genuinely charming amount of attention. American Mensa gave it an **honorary membership** in April 2019 — the first robot ever to get one, and only the third character, after Lisa Simpson and Mr. Peabody. *Good Housekeeping*'s engineers named it a favourite. The toy press liked it. It won things.
+
+**How many were sold is anyone's guess.** Educational Insights never published a figure, and nobody else did either. That absence is its own kind of answer.
+
+Because then it just... faded. Educational Insights moved on to **Artie Max** — rechargeable, three markers, actual sensors, line detection — and quietly discontinued the 3000. Today it's an eBay item. The whole public trace of anyone hacking on it amounts to a handful of GitHub repos with zero or one star each.
+
+Which is a shame, because **the hardware was never the limitation.** Underneath the kids' Blockly editor sits a clean WebSocket API, inherited (undocumented, and evidently unintentionally) from [Mirobot](https://github.com/mirobot), an open-source Kickstarter robot from 2014. Educational Insights never advertised this. As far as I can tell, they never even mentioned it.
+
+The real constraint was that a nine-year-old had to write the code.
+
+That constraint is gone now. The robot that was built so children could learn to program turns out to be a perfectly good pair of hands for a machine that already knows how. Same motors, same protocol, same $69 of plastic — and the awkward part was never the drawing. It was the coding. Which is exactly the part that got automated.
+
+---
+
 ## What's actually in here
 
 ### An SVG renderer for a robot that can't draw curves

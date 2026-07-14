@@ -12,7 +12,7 @@ import math
 
 import pytest
 
-from artie_mcp.strokes import (
+from smartie3000.strokes import (
     OutOfBounds,
     Page,
     START_HEADING,

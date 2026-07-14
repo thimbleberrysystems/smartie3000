@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from artie_mcp.strokes import (
+from smartie3000.strokes import (
     OutOfBounds,
     Page,
     Pose,
@@ -146,3 +146,35 @@ def test_stroke_order_reduces_pen_travel():
     good = optimise_stroke_order(bad, pose)
     assert pen_up_travel(good, pose) < pen_up_travel(bad, pose)
     assert len(good.strokes) == len(bad.strokes), "a stroke went missing"
+
+
+# --- ink quality ---
+
+
+def test_the_pen_does_not_pivot_while_down():
+    """The robot stops dead and rotates in place at every turn.
+
+    If the pen is already touching the paper when it does that, it grinds a
+    blob into the page. So the robot must AIM first and lower the pen second --
+    never pen-down-then-turn, which used to happen at the start of every single
+    stroke (17 of them in a word like "HI ARTIE").
+    """
+    plan = StrokePlan([[(0, 0), (50, 0)], [(0, 50), (50, 50)]])
+    commands, _ = plan_to_commands(plan, Pose(0, 0, 90))
+
+    for i, (cmd, _) in enumerate(commands):
+        if cmd == "pendown":
+            nxt = commands[i + 1][0] if i + 1 < len(commands) else None
+            assert nxt != "left" and nxt != "right", (
+                "the robot turns immediately after lowering the pen -- it will "
+                "pivot on the tip and blot the paper"
+            )
+
+
+def test_aiming_happens_before_the_pen_drops():
+    """The turn to face the first segment must come while the pen is still up."""
+    # Robot faces up (90); the stroke runs to the right (bearing 0). It must
+    # turn right 90 BEFORE the pendown, not after.
+    plan = StrokePlan([[(0, 0), (50, 0)]])
+    verbs = [c for c, _ in plan_to_commands(plan, Pose(0, 0, 90))[0]]
+    assert verbs.index("right") < verbs.index("pendown")

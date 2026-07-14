@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from artie_mcp import server
-from artie_mcp.client import ArtieError, ArtieConfig, DryRunClient
+from smartie3000 import server
+from smartie3000.client import ArtieError, ArtieConfig, DryRunClient
 
 
 class FlakyClient(DryRunClient):

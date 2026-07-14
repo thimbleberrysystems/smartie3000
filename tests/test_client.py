@@ -12,7 +12,7 @@ import asyncio
 import pytest
 import websockets
 
-from artie_mcp.client import ArtieClient, ArtieConfig, ArtieError
+from smartie3000.client import ArtieClient, ArtieConfig, ArtieError
 
 from .fake_artie import FakeArtie
 

@@ -207,6 +207,17 @@ def plan_to_commands(
     x, y, heading = pose.x, pose.y, pose.heading
     pen_is_down = False
 
+    def turn_towards(target: Point) -> None:
+        """Rotate to face `target` without moving."""
+        nonlocal heading
+        dx, dy = target[0] - x, target[1] - y
+        if math.hypot(dx, dy) < EPS_DIST:
+            return
+        turn = _normalise_angle(math.degrees(math.atan2(dy, dx)) - heading)
+        if abs(turn) >= EPS_ANGLE:
+            commands.append(("left", turn) if turn > 0 else ("right", -turn))
+            heading = _normalise_angle(heading + turn)
+
     def travel_to(target: Point) -> None:
         nonlocal x, y, heading
         dx, dy = target[0] - x, target[1] - y
@@ -214,10 +225,7 @@ def plan_to_commands(
         if distance < EPS_DIST:
             return
 
-        turn = _normalise_angle(math.degrees(math.atan2(dy, dx)) - heading)
-        if abs(turn) >= EPS_ANGLE:
-            commands.append(("left", turn) if turn > 0 else ("right", -turn))
-            heading = _normalise_angle(heading + turn)
+        turn_towards(target)
 
         commands.append(("forward", distance))
 
@@ -240,7 +248,11 @@ def plan_to_commands(
             pen_is_down = False
         travel_to(stroke[0])
 
-        # Draw it.
+        # Aim BEFORE lowering the pen. Otherwise the robot pivots on the spot
+        # with the tip already touching, grinding a blob into the paper at the
+        # start of every single stroke -- 17 of them in a word like "HI ARTIE".
+        turn_towards(stroke[1])
+
         commands.append(("pendown", None))
         pen_is_down = True
         for point in stroke[1:]:

@@ -15,6 +15,7 @@ Without the flip, everything comes out mirrored.
 from __future__ import annotations
 
 import math
+import os
 import re
 
 from .strokes import Point, Polyline, StrokePlan, simplify
@@ -31,8 +32,18 @@ _TOKEN = re.compile(r"[MmZzLlHhVvCcSsQqTtAa]|" + _NUMBER.pattern)
 # coarsely here and then run RDP simplification over the result, which collapses
 # the near-straight runs that flattening inevitably over-samples.
 FLATTEN_TOLERANCE_MM = 1.0
-SIMPLIFY_EPSILON_MM = 0.5
 MAX_SEGMENTS = 60
+
+# How much shape detail to trade away for cleaner ink.
+#
+# Every surviving vertex is a place where the robot STOPS DEAD, pivots, and
+# sets off again -- and a felt tip sitting still bleeds a blob. There is no
+# continuous-curve command in the firmware (we checked: `arc` is rejected), so
+# the only way to get cleaner lines is to stop fewer times.
+#
+# Raise this for cleaner, blockier output; lower it for more faithful curves
+# and more ink pooling. 0.6mm is under the width of a typical felt tip.
+SIMPLIFY_EPSILON_MM = float(os.environ.get("ARTIE_SIMPLIFY_MM", "0.6"))
 
 
 class SVGParseError(ValueError):

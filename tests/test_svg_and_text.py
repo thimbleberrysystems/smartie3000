@@ -4,9 +4,9 @@ import math
 
 import pytest
 
-from artie_mcp.strokes import plan_to_commands
-from artie_mcp.svg import SVGParseError, parse_path, plan_from_svg_path
-from artie_mcp.text import UnsupportedCharacter, plan_from_text
+from smartie3000.strokes import plan_to_commands
+from smartie3000.svg import SVGParseError, parse_path, plan_from_svg_path
+from smartie3000.text import UnsupportedCharacter, plan_from_text
 
 from .test_strokes import assert_traces
 

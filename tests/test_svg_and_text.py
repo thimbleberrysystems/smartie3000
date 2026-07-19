@@ -194,3 +194,38 @@ def test_unsupported_character_says_what_is_supported():
 def test_empty_text_is_rejected():
     with pytest.raises(ValueError):
         plan_from_text("   ", 20)
+
+
+def test_narrow_letters_advance_less_than_wide_ones():
+    """Proportional spacing: 'lll' must be narrower than 'mmm' (was monospaced,
+    so they used to be identical)."""
+    narrow, _ = plan_from_text("lll", 30).size()
+    wide, _ = plan_from_text("mmm", 30).size()
+    assert narrow < wide * 0.7, "letters are still monospaced"
+
+
+def test_advance_is_constant_for_repeated_letters():
+    """Each added copy of a letter must widen the word by the same amount --
+    i.e. the per-letter advance is stable (the basis of even spacing)."""
+    w1, _ = plan_from_text("m", 30).size()
+    w2, _ = plan_from_text("mm", 30).size()
+    w3, _ = plan_from_text("mmm", 30).size()
+    assert (w3 - w2) == pytest.approx(w2 - w1, abs=0.01)
+
+
+def test_gap_between_letters_is_constant_regardless_of_widths():
+    """The blank GAP between two letters is 2*SIDE_BEARING no matter how wide
+    they are -- so 'l m' and 'm l' leave the same gap. That even gap is what
+    reads as even spacing; the fixed-cell font failed this."""
+    # advance(X) = width(XX) - width(X). gap = advance(X) - ink_width(X).
+    def advance(ch):
+        one, _ = plan_from_text(ch, 30).size()
+        two, _ = plan_from_text(ch + ch, 30).size()
+        return two - one
+
+    def ink_width(ch):
+        return plan_from_text(ch, 30).size()[0]
+
+    gap_l = advance("l") - ink_width("l")
+    gap_m = advance("m") - ink_width("m")
+    assert gap_l == pytest.approx(gap_m, abs=0.01), "gaps differ by letter width"

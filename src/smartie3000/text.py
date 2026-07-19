@@ -18,8 +18,16 @@ from .strokes import Polyline, StrokePlan
 
 GLYPH_WIDTH = 4.0
 GLYPH_HEIGHT = 6.0  # cap height
-GLYPH_ADVANCE = 5.0  # 4 wide + 1 of side bearing
 LINE_SPACING = 1.6  # multiples of cap height
+
+# Proportional spacing. The font used to be monospaced -- every glyph advanced
+# a fixed amount regardless of width -- so a narrow `l` or `i` got the same wide
+# cell as a fat `m`, leaving lop-sided gaps. Instead we advance by each glyph's
+# actual ink width plus a constant SIDE_BEARING on each side, so the *gap*
+# between letters is even (which is what the eye reads as evenly spaced).
+SIDE_BEARING = 0.8  # blank space on each side of a glyph's ink
+SPACE_ADVANCE = 3.0  # width of a space character
+AVG_ADVANCE = 4.6  # rough per-char advance, for the wrap estimate only
 
 # Each glyph is a list of pen-down strokes.
 _GLYPHS: dict[str, list[Polyline]] = {
@@ -210,7 +218,10 @@ def plan_from_text(
     scale = height_mm / GLYPH_HEIGHT
 
     if max_width_mm:
-        per_char = GLYPH_ADVANCE * scale
+        # A rough estimate, slightly generous so lines never overflow the page
+        # (check_fits would reject a line that did). Proportional widths make
+        # exact char-count wrapping impossible anyway.
+        per_char = AVG_ADVANCE * scale
         text = _wrap(text, int(max_width_mm // per_char))
 
     strokes: list[Polyline] = []
@@ -222,6 +233,9 @@ def plan_from_text(
             cursor_x = 0.0
             cursor_y -= GLYPH_HEIGHT * LINE_SPACING
             continue
+        if char == " ":
+            cursor_x += SPACE_ADVANCE
+            continue
 
         glyph = _GLYPHS.get(char)
         if glyph is None:
@@ -230,14 +244,22 @@ def plan_from_text(
                 f"Supported: {supported_characters()!r}"
             )
 
+        # Advance by the glyph's own ink width, not a fixed cell. Place its ink
+        # SIDE_BEARING in from the cursor, so the blank gap to the next letter is
+        # always exactly 2*SIDE_BEARING -- constant, whatever the letters' widths.
+        xs = [x for stroke in glyph for x, _ in stroke]
+        ink_min, ink_max = min(xs), max(xs)
+        ink_w = ink_max - ink_min
+        shift = cursor_x + SIDE_BEARING - ink_min
+
         for stroke in glyph:
             strokes.append(
                 [
-                    ((x + cursor_x) * scale, (y + cursor_y) * scale)
+                    ((x + shift) * scale, (y + cursor_y) * scale)
                     for x, y in stroke
                 ]
             )
-        cursor_x += GLYPH_ADVANCE
+        cursor_x += ink_w + 2 * SIDE_BEARING
 
     if not strokes:
         raise ValueError("nothing to write (only spaces?)")

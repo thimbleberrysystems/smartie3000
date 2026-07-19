@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from .strokes import (
     path as make_path,
     plan_to_commands,
     polygon as make_polygon,
+    round_corners,
     to_svg,
 )
 from .svg import plan_from_svg_path
@@ -55,6 +57,13 @@ PAGE = Page(
     height_mm=float(os.environ.get("ARTIE_PAGE_HEIGHT_MM", "297")),
 )
 PREVIEW_PATH = Path(os.environ.get("ARTIE_PREVIEW_PATH", "artie_preview.svg"))
+
+# Corner rounding. At a sharp point the robot nearly reverses on a wet pen and
+# blots (the apex of every A, the bottom of every V). Any vertex turning more
+# than MAX_TURN_DEG is replaced by a short arc so no single pivot exceeds it.
+# CORNER_MM is how far the fillet cuts in. Set CORNER_MM=0 to disable.
+MAX_TURN_DEG = float(os.environ.get("ARTIE_MAX_TURN_DEG", "60"))
+CORNER_MM = float(os.environ.get("ARTIE_CORNER_MM", "3"))
 
 # Where we believe the robot is. Dead reckoning -- see the module docstring.
 _pose = Pose(0.0, 0.0)
@@ -79,8 +88,6 @@ def _check_distance(mm: float) -> None:
 
 def _advance(cmd: str, arg: float | None) -> None:
     """Keep our belief about the robot in step with what we just told it to do."""
-    import math
-
     global _pose
     if cmd == "left":
         _pose.heading = (_pose.heading + (arg or 0)) % 360
@@ -175,6 +182,7 @@ async def _draw_or_preview(
     plan: StrokePlan, what: str, preview_only: bool
 ) -> str | list:
     global _pose
+    plan = round_corners(plan, MAX_TURN_DEG, CORNER_MM)
     plan = optimise_stroke_order(plan, _pose)
     check_fits(plan, PAGE)
     commands, end_pose = plan_to_commands(plan, _pose)
@@ -433,6 +441,100 @@ async def artie_calibrate(
     )
 
 
+_MECHANICAL_CHECKLIST = (
+    "Before trusting any number, rule out the mechanical causes:\n"
+    "  - pen sitting too low (it drags and steers like a rudder)\n"
+    "  - tired batteries (one motor weakens more than the other)\n"
+    "  - debris or hair around a wheel axle\n"
+    "  - an uneven surface, or glue seams on a joined-up sheet"
+)
+
+
+@mcp.tool()
+async def artie_calibrate_straightness(
+    line_length_mm: float | None = None, drift_mm: float | None = None
+) -> str:
+    """Measure and correct the robot's tendency to curve instead of driving straight.
+
+    Artie has no wheel encoders, so mismatched motors make long moves bow into
+    a shallow arc. This tool measures that arc so the client can counter-steer.
+
+    Call with NO arguments first: it draws a single line that should be 300mm
+    and dead straight. Then:
+      1. Lay a ruler or straight edge from the line's start to its end.
+      2. Measure how far the MIDDLE of the drawn line bulges away from the
+         straight edge, in mm. Curving LEFT of travel = positive number.
+      3. IMPORTANT: run this twice. If the line bows the SAME way both times,
+         it is systematic and correctable. If the bow changes side or size,
+         the cause is mechanical -- no calibration value will fix it.
+
+    Then call again with line_length_mm (the straight-edge distance start to
+    end) and drift_mm (the mid-line bulge, signed). It returns the
+    ARTIE_VEER_DEG_PER_MM value to set.
+    """
+    if line_length_mm is None and drift_mm is None:
+        client = _get_client()
+        client.clear_abort()
+        await client.pen_up()
+        await client.pen_down()
+        # Send the move RAW, bypassing any existing veer compensation --
+        # otherwise a re-calibration would measure the residual error and the
+        # computed value would need to be stacked on the old one.
+        await client.send(
+            "forward", round(300 * client.config.distance_scale)
+        )
+        await client.pen_up()
+        _advance("forward", 300)
+        current = (
+            f"(A veer of {_config.veer_deg_per_mm} deg/mm is currently set; "
+            "this line was drawn WITHOUT it, so measure the raw bow.)\n"
+            if _config.veer_deg_per_mm
+            else ""
+        )
+        return (
+            "Drew a line that SHOULD be 300mm and dead straight.\n"
+            + current
+            + "\nLay a straight edge from its start to its end, then call again with:\n"
+            "  line_length_mm = straight-edge distance from start to end (mm)\n"
+            "  drift_mm       = how far the line's middle bulges off the edge\n"
+            "                   (curving LEFT of travel = positive)\n\n"
+            "Run it twice first -- a bow that doesn't repeat is mechanical, "
+            "not calibratable.\n" + _MECHANICAL_CHECKLIST
+        )
+
+    if line_length_mm is None or drift_mm is None:
+        raise ValueError(
+            "pass both line_length_mm and drift_mm (or neither, to draw the line)"
+        )
+    if line_length_mm <= 0:
+        raise ValueError("line_length_mm must be positive")
+
+    if abs(drift_mm) < 0.5:
+        return (
+            "A bulge under 0.5mm is within pen-width noise -- the robot is "
+            "driving straight enough. No compensation needed."
+        )
+
+    # The drawn line is an arc; its mid-point sagitta s over a chord L gives
+    # curvature 1/R = 8*s/L^2. Heading change per mm driven is 1/R radians.
+    k_rad_per_mm = 8.0 * drift_mm / (line_length_mm**2)
+    k_deg_per_mm = math.degrees(k_rad_per_mm)
+    per_100 = k_deg_per_mm * 100
+
+    return (
+        f"Measured: {drift_mm:+.1f}mm bulge over a {line_length_mm:.0f}mm line "
+        f"-> the robot curves {per_100:.2f} deg per 100mm driven.\n\n"
+        "Set this in the environment and restart the MCP server:\n\n"
+        f"  ARTIE_VEER_DEG_PER_MM={k_deg_per_mm:.5f}\n\n"
+        "Long moves will then be driven as short chord-aimed segments that "
+        "counter-steer against the curve (segment length: ARTIE_SEGMENT_MM, "
+        "default 50).\n\n"
+        "Verify: draw the 300mm line again -- the bow should visibly shrink. "
+        "If it didn't, or the original bow wasn't repeatable:\n"
+        + _MECHANICAL_CHECKLIST
+    )
+
+
 # --- drawing ---
 
 
@@ -528,12 +630,13 @@ async def artie_draw_text(
 ) -> str | list:
     """Write text using a single-stroke font.
 
-    `height_mm` is the capital-letter height in MILLIMETRES. Letters are drawn as
-    pen strokes, not filled outlines.
+    `height_mm` is the CAPITAL-letter height in MILLIMETRES. Letters are drawn
+    as pen strokes, not filled outlines.
 
-    Only uppercase letters, digits and basic punctuation exist in the font;
-    lowercase input is written as uppercase. Newlines start a new line, and by
-    default long text wraps to fit the paper.
+    Both cases are supported: capitals come out `height_mm` tall, lowercase
+    proportionally smaller (with real ascenders and descenders). Digits and
+    basic punctuation exist too. Newlines start a new line, and by default
+    long text wraps to fit the paper.
 
     Text gets wide fast -- roughly (height_mm * 0.83) per character -- so preview
     first if you are near the edge.

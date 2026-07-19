@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import random
 import string
@@ -59,6 +60,15 @@ class ArtieConfig:
     distance_scale: float = 1.0
     turn_scale: float = 1.0
 
+    # Straight-line veer. Artie has no encoders, so mismatched motors make it
+    # trace a shallow ARC instead of a line. Model it as a constant curvature:
+    # degrees of unwanted heading change per mm driven (curving LEFT is
+    # positive). Measure it with artie_calibrate_straightness. When non-zero,
+    # long forwards are split into `segment_mm` chunks with tiny counter-steer
+    # turns between them. 0 = off (behaviour identical to uncompensated).
+    veer_deg_per_mm: float = 0.0
+    segment_mm: float = 50.0
+
     @classmethod
     def from_env(cls) -> "ArtieConfig":
         return cls(
@@ -69,6 +79,8 @@ class ArtieConfig:
             timeout=float(os.environ.get("ARTIE_TIMEOUT", "30")),
             distance_scale=float(os.environ.get("ARTIE_DISTANCE_SCALE", "1.0")),
             turn_scale=float(os.environ.get("ARTIE_TURN_SCALE", "1.0")),
+            veer_deg_per_mm=float(os.environ.get("ARTIE_VEER_DEG_PER_MM", "0.0")),
+            segment_mm=float(os.environ.get("ARTIE_SEGMENT_MM", "50.0")),
         )
 
     @property
@@ -263,12 +275,64 @@ class ArtieClient:
         return await self._move(-mm * self.config.distance_scale)
 
     async def _move(self, signed_mm: float) -> str:
+        # Counter-steer against measured veer, but only for long forwards.
+        # (Reverse veer differs from forward veer, and the planner never emits
+        # long reverses -- back() stays raw.)
+        if (
+            self.config.veer_deg_per_mm != 0.0
+            and signed_mm > self.config.segment_mm
+        ):
+            return await self._move_straight(signed_mm)
+
         sent, self._dist_residual = self._quantise(signed_mm, self._dist_residual)
         if sent == 0:
             return "complete"  # rounds to nothing; the remainder is carried
         if sent > 0:
             return await self.send("forward", sent)
         return await self.send("back", -sent)
+
+    async def _move_straight(self, total_mm: float) -> str:
+        """Drive a long line as chord-aimed segments that cancel the veer.
+
+        Without encoders the robot arcs with constant curvature k (deg/mm).
+        The chord of an arc of length L points at `heading + k*L/2`, so if we
+        aim each segment k*L/2 *against* the veer, the chords land exactly on
+        the intended line:
+
+            turn -k*L/2 . forward L . turn -k*L . forward L ... turn -k*L/2
+
+        The corrections total -k*total, and the final half-turn leaves the
+        heading correct for whatever comes next -- so the server's dead
+        reckoning ("this was a straight line") stays true without changes.
+
+        The corrections are sub-degree and the robot only takes integers;
+        they survive because _quantise carries rounding residuals across
+        commands instead of discarding them.
+        """
+        # signed_mm is in command units (distance_scale applied); the veer
+        # constant is per PHYSICAL mm, so convert for the correction.
+        physical_mm = total_mm / self.config.distance_scale
+        n = max(2, math.ceil(total_mm / self.config.segment_mm))
+        seg_cmd = total_mm / n
+        seg_phys = physical_mm / n
+        correction = -self.config.veer_deg_per_mm * seg_phys  # per segment
+
+        for i in range(n):
+            if self.aborted:
+                raise ArtieError(
+                    "stopped: move abandoned partway through its segments"
+                )
+            # Half correction to aim the first chord; full between chords.
+            await self._turn((correction / 2 if i == 0 else correction)
+                             * self.config.turn_scale)
+            sent, self._dist_residual = self._quantise(
+                seg_cmd, self._dist_residual
+            )
+            if sent > 0:
+                await self.send("forward", sent)
+        # Leave the heading on the line's true bearing.
+        await self._turn((correction / 2) * self.config.turn_scale)
+        return "complete"
 
     async def left(self, degrees: float) -> str:
         return await self._turn(degrees * self.config.turn_scale)

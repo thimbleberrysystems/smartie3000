@@ -44,7 +44,7 @@ Supports `M L H V C S Q T A Z`, absolute and relative. Fills, strokes and stylin
 
 ### A single-stroke font
 
-Ordinary fonts are outlines meant to be filled. A pen can't fill anything. So the letters here are defined as **the path the pen actually walks** — the same idea as engraving and plotter fonts. A 4×6 grid, scaled from cap height, with word wrapping to the page.
+Ordinary fonts are outlines meant to be filled. A pen can't fill anything. So the letters here are defined as **the path the pen actually walks** — the same idea as engraving and plotter fonts. Upper *and* lower case, with real ascenders and descenders (a `g` dips below the line instead of pretending to be a `9`), digits, punctuation, and word wrapping to the page. `height_mm` is the capital height; lowercase comes out proportionally smaller, like real type.
 
 ### A motion planner that knows the robot is lying to itself
 
@@ -79,6 +79,19 @@ artie_calibrate(measured_line_mm=94, measured_turn_deg=87)
 
 A shape that won't close is the tell. Draw a pentagon — five turns compound the error faster than a square's four.
 
+### Counter-steering, because it can't even drive straight
+
+With no encoders, two open-loop motors are never perfectly matched — so a "straight" line bows into a shallow arc. The firmware's own fix for this (`moveCalibration`, `slackCalibration`) is rejected on Artie, so we correct it client-side:
+
+```python
+artie_calibrate_straightness()   # draws a line that SHOULD be 300mm and straight
+# lay a ruler start-to-end, measure the mid-line bulge (left of travel = positive)
+artie_calibrate_straightness(line_length_mm=300, drift_mm=10)
+# -> ARTIE_VEER_DEG_PER_MM=0.05093
+```
+
+With that set, long moves are driven as short **chord-aimed segments** (`ARTIE_SEGMENT_MM`, default 50) with sub-degree counter-steer turns between them — corrections that only survive integer quantisation because the client carries rounding residuals across commands. Run the calibration line **twice** first: a bow that repeats is systematic and correctable; a bow that changes side is mechanical (pen too low, tired batteries, debris on a wheel) and no number will fix it.
+
 ---
 
 ## Getting clean lines
@@ -90,6 +103,7 @@ Ink quality is a real engineering problem here, not an afterthought.
 - **Simplification is aggressive by design.** `ARTIE_SIMPLIFY_MM` (default `0.6`) trades curve fidelity for fewer stops. Raise it if you're getting blobs; lower it if circles look faceted.
 - **The pen aims before it drops.** The planner used to lower the pen and *then* turn to face the first segment — grinding a blob into the paper at the start of every stroke, 17 of them in a word like "HI ARTIE". Now it turns first and lowers second.
 - **Stroke ordering is nearest-neighbour**, so the pen doesn't criss-cross the page between letters.
+- **Sharp corners are rounded off.** The worst blots aren't at right angles (the octagonal glyph corners already avoid those) — they're at *points*: the apex of an `A`, the bottom of a `V`, the zigzag of `W`/`M`, where the robot nearly reverses on a wet pen and ink pools. Any vertex turning more than `ARTIE_MAX_TURN_DEG` (default 60°) is replaced by a short fillet arc, split so no single pivot exceeds the cap. `ARTIE_CORNER_MM` (default 3) sets how far it cuts in; set it to 0 to keep corners crisp. This applies to SVG art too, not just text.
 
 If lines still look heavy: use a finer pen, and remember that a flat battery makes the motors weak. Short strokes and shapes that won't close look *exactly* like a calibration fault, and get misdiagnosed as one constantly.
 

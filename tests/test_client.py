@@ -226,3 +226,77 @@ async def test_a_command_that_rounds_to_zero_is_not_sent(robot):
     await client.forward(0.2)
     assert "forward" not in robot.commands()
     await client.close()
+
+
+# --- veer compensation: the robot doesn't drive straight ---
+
+
+def veer_client(bot: FakeArtie, veer: float, segment: float = 50.0) -> ArtieClient:
+    return ArtieClient(
+        ArtieConfig(
+            host=bot.url_host, port=bot.port, timeout=2.0,
+            veer_deg_per_mm=veer, segment_mm=segment,
+        )
+    )
+
+
+async def test_long_move_is_segmented_with_counter_steer(robot):
+    """Artie has no encoders; mismatched motors make it arc instead of drive
+    straight. With a measured veer, a long forward must become segments with
+    small corrective turns between them."""
+    k = 0.02  # deg per mm -- 2 degrees of unwanted curve per 100mm
+    client = veer_client(robot, veer=k)
+    await client.forward(200)
+
+    kinds = [c for c, _ in robot.received]
+    assert kinds.count("forward") >= 3, f"200mm was not segmented: {kinds}"
+    assert "right" in kinds, "no counter-steer turns were issued"
+
+    total_mm = sum(a for c, a in robot.received if c == "forward")
+    assert abs(total_mm - 200) <= 1, f"distance not preserved: {total_mm}"
+
+    # veer is +k (curves left), so net correction must be ~ -k*200 = 4 deg right
+    net_turn = sum(
+        a if c == "left" else -a
+        for c, a in robot.received
+        if c in ("left", "right")
+    )
+    assert abs(net_turn - (-k * 200)) <= 1.0, (
+        f"net correction {net_turn} deg, expected {-k*200} deg"
+    )
+    await client.close()
+
+
+async def test_zero_veer_is_byte_identical_to_today(robot):
+    """Uncalibrated behaviour must not change: one command, no segmentation."""
+    client = veer_client(robot, veer=0.0)
+    await client.forward(200)
+    assert robot.commands() == ["forward"]
+    assert robot.received[0][1] == 200
+    await client.close()
+
+
+async def test_short_moves_are_not_segmented(robot):
+    client = veer_client(robot, veer=0.02, segment=50.0)
+    await client.forward(30)
+    assert robot.commands().count("forward") == 1
+    await client.close()
+
+
+async def test_stop_interrupts_a_segmented_move(robot):
+    """A compensated 400mm move is many segments; stop must abandon the rest."""
+    client = veer_client(robot, veer=0.02)
+    await client.version()
+    client._abort.set()  # as if artie_stop had been called
+    with pytest.raises(ArtieError, match="stopped"):
+        await client.forward(400)
+    assert robot.commands().count("forward") <= 1
+    await client.close()
+
+
+async def test_reverse_moves_are_not_compensated(robot):
+    """Reverse veer differs from forward veer; back() stays raw."""
+    client = veer_client(robot, veer=0.02)
+    await client.back(200)
+    assert robot.commands() == ["back"]
+    await client.close()

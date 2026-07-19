@@ -145,8 +145,39 @@ def test_text_traces_correctly():
     assert_traces(plan_from_text("AT", height_mm=30))
 
 
-def test_lowercase_is_folded_to_uppercase():
-    assert plan_from_text("hi", 20).strokes == plan_from_text("HI", 20).strokes
+def test_lowercase_is_a_real_alphabet_not_a_fold():
+    """The font used to fold lowercase to uppercase; now it has real glyphs."""
+    assert plan_from_text("hi", 20).strokes != plan_from_text("HI", 20).strokes
+
+
+def test_the_whole_lowercase_alphabet_traces_correctly():
+    """Every glyph must survive the plan->commands->replay round trip -- the
+    harness that catches sign errors and heading drift in letterforms."""
+    assert_traces(plan_from_text("abcdefghijklm", 30))
+    assert_traces(plan_from_text("nopqrstuvwxyz", 30))
+
+
+def test_descenders_dip_below_the_baseline():
+    """g j p q y must reach below the line, or they read as 9 i b o v."""
+    # 'v' spans the x-height only (4 grid units); 'y' adds a 2-unit descender.
+    _, v_height = plan_from_text("v", 18).size()
+    _, y_height = plan_from_text("y", 18).size()
+    assert v_height == pytest.approx(12, abs=0.5)  # 4/6 of cap height
+    assert y_height == pytest.approx(18, abs=0.5)  # (4+2)/6 of cap height
+
+
+def test_ascenders_reach_cap_height():
+    _, b_height = plan_from_text("b", 18).size()
+    _, cap_height = plan_from_text("B", 18).size()
+    assert b_height == pytest.approx(cap_height, abs=0.1)
+
+
+def test_mixed_case_line_keeps_the_baseline():
+    """In 'vy', the v's lowest point must sit ABOVE the plan's bottom edge --
+    the y's descender defines the bottom, the v sits on the baseline."""
+    plan = plan_from_text("vy", 18)
+    v_bottom = min(p[1] for p in plan.strokes[0])  # first stroke belongs to v
+    assert v_bottom == pytest.approx(6, abs=0.5)  # 2 grid units above the descender
 
 
 def test_text_grows_wider_with_more_characters():

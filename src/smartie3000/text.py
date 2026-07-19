@@ -5,8 +5,11 @@ here: their glyphs are closed shapes meant to be filled. What we need is a
 *stroke* font, where each letter is the path the pen actually walks -- the same
 idea as engraving and plotter fonts (Hershey being the classic).
 
-Glyphs are defined on a 4-wide by 6-tall grid, y-up. Everything is scaled from
-the cap height, so `height_mm` means what you'd expect.
+Glyphs are defined on a 4-wide grid, y-up, baseline at y=0. Capitals span
+0..6; lowercase has an x-height of 4, ascenders (b d f h k l t) reaching the
+full 6, and descenders (g j p q y) dipping to -2. Everything is scaled from
+the CAP height, so `height_mm` means what you'd expect for capitals and
+lowercase comes out proportionally smaller.
 """
 
 from __future__ import annotations
@@ -63,6 +66,59 @@ _GLYPHS: dict[str, list[Polyline]] = {
     "X": [[(0, 0), (4, 6)], [(0, 6), (4, 0)]],
     "Y": [[(0, 6), (2, 3), (4, 6)], [(2, 3), (2, 0)]],
     "Z": [[(0, 6), (4, 6), (0, 0), (4, 0)]],
+    # --- lowercase: x-height 4, ascenders to 6, descenders to -2 ---
+    "a": [
+        [(4, 4), (4, 0)],
+        [(4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (3, 0), (4, 1)],
+    ],
+    "b": [
+        [(0, 6), (0, 0)],
+        [(0, 3), (1, 4), (3, 4), (4, 3), (4, 1), (3, 0), (0, 0)],
+    ],
+    "c": [[(4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (3, 0), (4, 1)]],
+    "d": [
+        [(4, 6), (4, 0)],
+        [(4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (4, 0)],
+    ],
+    "e": [
+        [(0, 2), (4, 2), (4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (3, 0), (4, 1)]
+    ],
+    "f": [[(3, 6), (2, 6), (1, 5), (1, 0)], [(0, 4), (3, 4)]],
+    "g": [
+        [(4, 4), (4, -1), (3, -2), (1, -2), (0, -1)],
+        [(4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (3, 0), (4, 1)],
+    ],
+    "h": [[(0, 6), (0, 0)], [(0, 3), (1, 4), (3, 4), (4, 3), (4, 0)]],
+    "i": [[(2, 4), (2, 0)], [(2, 5), (2, 5.4)]],
+    "j": [[(3, 4), (3, -1), (2, -2), (1, -2), (0, -1)], [(3, 5), (3, 5.4)]],
+    "k": [[(0, 6), (0, 0)], [(3, 4), (0, 2), (3, 0)]],
+    "l": [[(2, 6), (2, 0)]],
+    "m": [
+        [(0, 4), (0, 0)],
+        [(0, 3), (1, 4), (1.5, 4), (2, 3), (2, 0)],
+        [(2, 3), (3, 4), (3.5, 4), (4, 3), (4, 0)],
+    ],
+    "n": [[(0, 4), (0, 0)], [(0, 3), (1, 4), (3, 4), (4, 3), (4, 0)]],
+    "o": [[(1, 0), (0, 1), (0, 3), (1, 4), (3, 4), (4, 3), (4, 1), (3, 0), (1, 0)]],
+    "p": [
+        [(0, 4), (0, -2)],
+        [(0, 3), (1, 4), (3, 4), (4, 3), (4, 1), (3, 0), (0, 0)],
+    ],
+    "q": [
+        [(4, 4), (4, -2)],
+        [(4, 3), (3, 4), (1, 4), (0, 3), (0, 1), (1, 0), (4, 0)],
+    ],
+    "r": [[(0, 4), (0, 0)], [(0, 3), (1, 4), (3, 4), (4, 3)]],
+    "s": [
+        [(4, 3), (3, 4), (1, 4), (0, 3), (1, 2), (3, 2), (4, 1), (3, 0), (1, 0), (0, 1)]
+    ],
+    "t": [[(1, 6), (1, 1), (2, 0), (3, 0)], [(0, 4), (3, 4)]],
+    "u": [[(0, 4), (0, 1), (1, 0), (3, 0), (4, 1), (4, 4)]],
+    "v": [[(0, 4), (2, 0), (4, 4)]],
+    "w": [[(0, 4), (1, 0), (2, 3), (3, 0), (4, 4)]],
+    "x": [[(0, 4), (4, 0)], [(0, 0), (4, 4)]],
+    "y": [[(0, 4), (2, 0)], [(4, 4), (1, -2)]],
+    "z": [[(0, 4), (4, 4), (0, 0), (4, 0)]],
     "0": [[(1, 0), (0, 1), (0, 5), (1, 6), (3, 6), (4, 5), (4, 1), (3, 0), (1, 0)]],
     "1": [[(1, 5), (2, 6), (2, 0)], [(1, 0), (3, 0)]],
     "2": [[(0, 5), (1, 6), (3, 6), (4, 5), (4, 4), (0, 0), (4, 0)]],
@@ -140,9 +196,9 @@ def plan_from_text(
 ) -> StrokePlan:
     """Render text as pen strokes.
 
-    `height_mm` is the cap height of the letters. Lowercase is folded to
-    uppercase -- the font has no lowercase glyphs, and silently dropping the
-    characters would be worse than drawing them large.
+    `height_mm` is the CAP height: capitals come out exactly this tall, and
+    lowercase proportionally smaller (x-height is 2/3 of it), with ascenders
+    reaching cap height and descenders dipping below the baseline.
 
     If `max_width_mm` is given, text wraps at word boundaries to fit it.
     """
@@ -161,7 +217,7 @@ def plan_from_text(
 
     cursor_x = 0.0
     cursor_y = 0.0
-    for char in text.upper():
+    for char in text:
         if char == "\n":
             cursor_x = 0.0
             cursor_y -= GLYPH_HEIGHT * LINE_SPACING

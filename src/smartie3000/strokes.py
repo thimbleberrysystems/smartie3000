@@ -144,6 +144,100 @@ def simplify(plan: StrokePlan, epsilon_mm: float = 0.5) -> StrokePlan:
     return StrokePlan([_rdp(stroke, epsilon_mm) for stroke in plan.strokes])
 
 
+def _quad_bezier(p0: Point, p1: Point, p2: Point, t: float) -> Point:
+    u = 1.0 - t
+    return (
+        u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+        u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
+    )
+
+
+def _fillet(a: Point, b: Point, c: Point, max_turn: float, corner: float) -> Polyline:
+    """Replace a sharp vertex `b` with a rounded arc; return the points that
+    stand in for `b` (its neighbours `a`, `c` stay put)."""
+    v1 = (a[0] - b[0], a[1] - b[1])  # b -> a
+    v2 = (c[0] - b[0], c[1] - b[1])  # b -> c
+    l1 = math.hypot(*v1)
+    l2 = math.hypot(*v2)
+    if l1 < EPS_DIST or l2 < EPS_DIST:
+        return [b]
+
+    # The angle the robot pivots through at b (180 - interior angle).
+    heading_in = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+    heading_out = math.degrees(math.atan2(c[1] - b[1], c[0] - b[0]))
+    turn = abs(_normalise_angle(heading_out - heading_in))
+    if turn <= max_turn:
+        return [b]  # gentle enough -- leave it crisp
+
+    # Cut back along each segment, but never more than ~45% of the shorter one
+    # (so adjacent fillets can't overlap: two corners share a segment and each
+    # eats at most 45% of it).
+    d = min(corner, 0.45 * l1, 0.45 * l2)
+    if d < EPS_DIST:
+        return [b]
+
+    u1 = (v1[0] / l1, v1[1] / l1)
+    u2 = (v2[0] / l2, v2[1] / l2)
+    p1 = (b[0] + u1[0] * d, b[1] + u1[1] * d)
+    p2 = (b[0] + u2[0] * d, b[1] + u2[1] * d)
+
+    # A quadratic Bezier through p1, (control=b), p2 is tangent to both segments,
+    # stays inside the corner, and never overshoots. Its bend concentrates near
+    # the middle, so uniform-parameter samples don't turn evenly -- rather than
+    # guess a count, add points until the worst sub-turn is actually under the
+    # cap. `a` and `c` are included only to measure the junction turns.
+    n = max(2, math.ceil(turn / max_turn))
+    while n < 64:
+        arc = [_quad_bezier(p1, b, p2, i / n) for i in range(0, n + 1)]
+        chain = [a] + arc + [c]
+        worst = max(
+            abs(_normalise_angle(
+                math.degrees(math.atan2(chain[i + 1][1] - chain[i][1],
+                                        chain[i + 1][0] - chain[i][0]))
+                - math.degrees(math.atan2(chain[i][1] - chain[i - 1][1],
+                                          chain[i][0] - chain[i - 1][0]))))
+            for i in range(1, len(chain) - 1)
+        )
+        if worst <= max_turn + 1e-9:
+            return arc
+        n += 1
+    return arc
+
+
+def round_corners(
+    plan: StrokePlan, max_turn_deg: float = 60.0, corner_mm: float = 3.0
+) -> StrokePlan:
+    """Round off sharp corners so the robot never pivots hard on a wet pen.
+
+    At a sharp vertex the robot must nearly reverse -- decelerate to a near-stop,
+    pivot, accelerate away -- and it's slowest right AT the point, so ink pools
+    there. The apex of every A and the bottom of every V picks up a blob.
+
+    This replaces any vertex turning more than `max_turn_deg` with a short arc
+    (cut back `corner_mm` along each side), split so the robot never turns more
+    than the cap at one stop. Fillets only cut inward, so a drawing never grows
+    past its bounds. Applies to text, SVG, and polygons alike.
+
+    Note: on a CLOSED stroke (first point == last), the seam vertex is an
+    endpoint and stays sharp -- a minor cost that only affects closed shapes,
+    not the open strokes that make up letters.
+    """
+    if corner_mm <= 0 or max_turn_deg <= 0:
+        return plan
+    out: list[Polyline] = []
+    for stroke in plan.strokes:
+        if len(stroke) < 3:
+            out.append(list(stroke))
+            continue
+        rounded: Polyline = [stroke[0]]
+        for i in range(1, len(stroke) - 1):
+            rounded.extend(_fillet(stroke[i - 1], stroke[i], stroke[i + 1],
+                                   max_turn_deg, corner_mm))
+        rounded.append(stroke[-1])
+        out.append(rounded)
+    return StrokePlan(out)
+
+
 class OutOfBounds(ValueError):
     """The drawing is bigger than the paper."""
 
